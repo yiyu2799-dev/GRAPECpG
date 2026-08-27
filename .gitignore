@@ -1,0 +1,21 @@
+# Folders not included in the public repository
+docs/
+slurm/
+tests/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Training outputs
+runs/
+*.pt
+*.pth
+*.ckpt
+*.out
+*.err
+
+# System / editor files
+.DS_Store
+Thumbs.db
