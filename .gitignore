@@ -15,6 +15,14 @@ runs/
 *.ckpt
 *.out
 *.err
+*.log
+
+# Local / processed datasets
+*.npy
+*.npz
+*.rds
+*.fa
+*.fasta
 
 # System / editor files
 .DS_Store

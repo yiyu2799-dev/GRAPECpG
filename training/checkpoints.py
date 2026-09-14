@@ -17,19 +17,21 @@ FIRST_DECODER_WEIGHT = 'edge_decoder.layers.0.0.weight'
 
 STRICT_CONFIG_KEYS = (
     'node_dim', 'edge_dim', 'gnn_layers', 'aggr', 'gnn_activation',
-    'post_mlp_hidden', 'dna_window', 'fourier_dim', 'cell_emb_dim',
-    'cell_embedding', 'local', 'local_windows', 'local_meth_dim',
+    'post_mlp_hidden', 'dna_window', 'dna', 'fourier_dim', 'cell_emb_dim',
+    'cell_embedding', 'local', 'local_windows', 'local_aggregation', 'local_meth_dim',
     'local_mask_dim', 'local_rel_pos_dim', 'local_hidden_dim',
     'local_context_dim', 'local_distance_scale_bp', 'include_local_center',
     'impute_hiddens', 'impute_activation', 'segment_size', 'segment_strategy',
-    'position_normalization',
+    'position_normalization', 'split_mode', 'split_chrom', 'split_fractions',
+    'val_chrom', 'test_chrom',
 )
 
 STAGE2_GLOBAL_CONFIG_KEYS = (
     'node_dim', 'edge_dim', 'gnn_layers', 'aggr', 'gnn_activation',
-    'post_mlp_hidden', 'dna_window', 'fourier_dim', 'cell_emb_dim',
+    'post_mlp_hidden', 'dna_window', 'dna', 'fourier_dim', 'cell_emb_dim',
     'cell_embedding', 'local_windows', 'segment_size', 'segment_strategy',
-    'position_normalization',
+    'position_normalization', 'split_mode', 'split_chrom', 'split_fractions',
+    'val_chrom', 'test_chrom',
 )
 
 

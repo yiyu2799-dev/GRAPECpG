@@ -12,6 +12,7 @@ from torch_geometric.loader import DataLoader
 
 from config import parse_int_tuple
 from data.dataset import MethylationGenomeDataset
+from data.within_chromosome_dataset import WithinChromosomeMethylationDataset
 from models.model import GrapeCpGModel
 from training.checkpoints import load_stage2, load_strict, save_checkpoint
 from training.metrics import binary_metrics_from_logits, finite_metric, loss_for_logits
@@ -77,6 +78,39 @@ def build_optimizer(args, model):
 
 def build_dataset(args, split, seed, max_segments):
     context_window = max(parse_int_tuple(args.local_windows))
+    split_mode = getattr(args, 'split_mode', 'chromosome_holdout')
+
+    if split_mode == 'within_chromosome':
+        return WithinChromosomeMethylationDataset(
+            processed_dir=args.processed_dir,
+            split=split,
+            meth_file=args.meth_file,
+            dna_file=args.dna_file,
+            pos_file=args.pos_file,
+            chrom_file=args.chrom_file,
+            metadata_file=args.metadata_file,
+            reference_lengths_file=args.reference_lengths_file,
+            split_chrom=getattr(args, 'split_chrom', None),
+            split_fractions=getattr(args, 'split_fractions', None),
+            segment_size=args.segment_size,
+            segment_strategy=args.segment_strategy,
+            context_window=context_window,
+            position_normalization=args.position_normalization,
+            mask_ratio=args.mask_ratio,
+            dynamic_train_mask=args.dynamic_train_mask,
+            seed=seed,
+            max_segments=max_segments,
+            expected_dna_window=args.dna_window,
+            use_local=args.local,
+            include_local_center=args.include_local_center,
+            local_distance_scale_bp=args.local_distance_scale_bp,
+        )
+
+    if split_mode != 'chromosome_holdout':
+        raise ValueError(f'Unsupported split_mode: {split_mode}')
+
+    # Legacy chromosome-holdout channel: keep the original constructor and
+    # val/test chromosome semantics unchanged.
     return MethylationGenomeDataset(
         processed_dir=args.processed_dir,
         split=split,

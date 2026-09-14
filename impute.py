@@ -7,6 +7,7 @@ unknown cell-CpG pairs.
 """
 
 import argparse
+import copy
 import json
 from argparse import Namespace
 from pathlib import Path
@@ -15,9 +16,9 @@ import numpy as np
 import torch
 from torch_geometric.data import Data
 
-from data.dataset import MethylationGenomeDataset
 from models.model import GrapeCpGModel
 from training.checkpoints import load_raw_checkpoint, load_strict
+from training.trainer import build_dataset
 
 
 def _checkpoint_args(raw):
@@ -27,32 +28,12 @@ def _checkpoint_args(raw):
 
 
 def _dataset_from_checkpoint(args, split, processed_dir, max_segments):
-    from config import parse_int_tuple
-
-    return MethylationGenomeDataset(
-        processed_dir=processed_dir,
-        split=split,
-        meth_file=args.meth_file,
-        dna_file=args.dna_file,
-        pos_file=args.pos_file,
-        chrom_file=args.chrom_file,
-        metadata_file=args.metadata_file,
-        reference_lengths_file=args.reference_lengths_file,
-        val_chrom=args.val_chrom,
-        test_chrom=args.test_chrom,
-        segment_size=args.segment_size,
-        segment_strategy=args.segment_strategy,
-        context_window=max(parse_int_tuple(args.local_windows)),
-        position_normalization=args.position_normalization,
-        mask_ratio=args.mask_ratio,
-        dynamic_train_mask=False,
-        seed=args.seed,
-        max_segments=max_segments,
-        expected_dna_window=args.dna_window,
-        use_local=args.local,
-        include_local_center=args.include_local_center,
-        local_distance_scale_bp=args.local_distance_scale_bp,
-    )
+    # Reuse the same split-mode router as training/evaluation.  Work on a copy
+    # so command-line path overrides do not mutate the embedded checkpoint config.
+    dataset_args = copy.copy(args)
+    dataset_args.processed_dir = processed_dir
+    dataset_args.dynamic_train_mask = False
+    return build_dataset(dataset_args, split, int(dataset_args.seed), max_segments)
 
 
 def _full_observed_graph(dataset, spec):

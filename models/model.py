@@ -65,6 +65,7 @@ class GrapeCpGModel(nn.Module):
         self.node_dim = int(args.node_dim)
         self.edge_dim = int(args.edge_dim)
         self.dna_window = int(args.dna_window)
+        self.use_dna = bool(getattr(args, 'dna', True))
         self.n_cells = int(args.n_cells)
         self.use_cell_embedding = bool(args.cell_embedding)
         self.use_local = bool(args.local)
@@ -72,21 +73,27 @@ class GrapeCpGModel(nn.Module):
         if self.fourier_dim <= 0 or self.fourier_dim % 2 != 0:
             raise ValueError('fourier_dim must be a positive even integer.')
 
-        self.dna_encoder = DNAEncoderCNN(
-            dna_window=self.dna_window,
-            vocab_size=5,
-            token_dim=4,
-            conv1_channels=64,
-            conv2_channels=128,
-            kernel1=11,
-            pool1=4,
-            kernel2=3,
-            pool2=2,
-            hidden_dim=64,
-            out_dim=self.node_dim,
-            dropout=args.dropout,
-        )
-        self.site_fusion = nn.Linear(self.node_dim + self.fourier_dim, self.node_dim)
+        if self.use_dna:
+            self.dna_encoder = DNAEncoderCNN(
+                dna_window=self.dna_window,
+                vocab_size=5,
+                token_dim=4,
+                conv1_channels=64,
+                conv2_channels=128,
+                kernel1=11,
+                pool1=4,
+                kernel2=3,
+                pool2=2,
+                hidden_dim=64,
+                out_dim=self.node_dim,
+                dropout=args.dropout,
+            )
+            site_input_dim = self.node_dim + self.fourier_dim
+        else:
+            # DNA ablation: remove the DNA encoder entirely, but preserve genomic-position features.
+            self.dna_encoder = None
+            site_input_dim = self.fourier_dim
+        self.site_fusion = nn.Linear(site_input_dim, self.node_dim)
 
         self.cell_emb_dim = int(args.cell_emb_dim)
         self.cell_embedding = nn.Embedding(self.n_cells, self.cell_emb_dim)
@@ -121,6 +128,7 @@ class GrapeCpGModel(nn.Module):
                 hidden_dim=int(args.local_hidden_dim),
                 out_dim=int(args.local_context_dim),
                 dropout=float(args.dropout),
+                aggregation=getattr(args, 'local_aggregation', 'attention'),
             )
             self.local_context_output_dim = self.local_context.output_dim
         else:
@@ -150,7 +158,7 @@ class GrapeCpGModel(nn.Module):
         return torch.cat([torch.sin(angles), torch.cos(angles)], dim=-1)
 
     def build_node_features(self, data):
-        device = data.dna_seg.device
+        device = data.pos_norm_seg.device
         n_cells = int(data.n_cells.view(-1)[0].item())
         n_sites = int(data.n_sites.view(-1)[0].item())
         if n_cells != self.n_cells:
@@ -163,9 +171,12 @@ class GrapeCpGModel(nn.Module):
         else:
             cell_x = cell_ones
 
-        dna_x = self.dna_encoder(data.dna_seg)
         pos_x = self.fourier_position_features(data.pos_norm_seg.float().view(-1))
-        site_x = self.site_fusion(torch.cat([dna_x, pos_x], dim=1))
+        if self.use_dna:
+            dna_x = self.dna_encoder(data.dna_seg)
+            site_x = self.site_fusion(torch.cat([dna_x, pos_x], dim=1))
+        else:
+            site_x = self.site_fusion(pos_x)
         if site_x.shape[0] != n_sites:
             raise RuntimeError('Site feature count does not match data.n_sites.')
         return torch.cat([cell_x, site_x], dim=0)
@@ -175,14 +186,16 @@ class GrapeCpGModel(nn.Module):
         return self.edge_encoder(F.one_hot(edge_label, num_classes=2).float())
 
     def global_modules(self):
-        return [
-            self.dna_encoder,
+        modules = [
             self.site_fusion,
             self.cell_embedding,
             self.cell_fusion,
             self.edge_encoder,
             self.gnn,
         ]
+        if self.dna_encoder is not None:
+            modules.insert(0, self.dna_encoder)
+        return modules
 
     def freeze_global_branch(self):
         for module in self.global_modules():

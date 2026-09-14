@@ -6,6 +6,8 @@ import numpy as np
 import torch
 
 from config import DATA_DEFAULTS, MODEL_DEFAULTS, STAGE_DEFAULTS, TRAIN_DEFAULTS
+from data.dataset import canonical_chrom
+from data.splitters import validate_split_fractions
 from training.trainer import train_model
 
 
@@ -37,6 +39,26 @@ def build_parser():
     parser.add_argument('--metadata_file', default=DATA_DEFAULTS['metadata_file'])
     parser.add_argument('--reference_lengths_file', default=None,
                         help='Optional JSON chromosome-length override. Metadata chromosome_lengths is preferred.')
+    parser.add_argument(
+        '--split_mode', choices=['chromosome_holdout', 'within_chromosome'],
+        default=DATA_DEFAULTS['split_mode'],
+        help=(
+            'Data split protocol. chromosome_holdout preserves the original val/test chromosome logic; '
+            'within_chromosome splits one explicitly selected chromosome into contiguous position-ordered regions.'
+        ),
+    )
+    parser.add_argument(
+        '--split_chrom', default=DATA_DEFAULTS['split_chrom'],
+        help='within_chromosome only: chromosome to split (for example 18 or chr18). Must be provided explicitly.',
+    )
+    parser.add_argument(
+        '--split_fractions', nargs=3, type=float, default=DATA_DEFAULTS['split_fractions'],
+        metavar=('TRAIN', 'VAL', 'TEST'),
+        help=(
+            'within_chromosome only: train/val/test fractions by CpG-site count, for example '
+            '--split_fractions 0.8 0.1 0.1. Must be provided explicitly and sum to 1.'
+        ),
+    )
     parser.add_argument('--val_chrom', default=DATA_DEFAULTS['val_chrom'])
     parser.add_argument('--test_chrom', default=DATA_DEFAULTS['test_chrom'])
     parser.add_argument('--segment_size', type=int, default=DATA_DEFAULTS['segment_size'],
@@ -58,6 +80,11 @@ def build_parser():
     parser.add_argument('--gnn_activation', default=MODEL_DEFAULTS['gnn_activation'])
     parser.add_argument('--post_mlp_hidden', type=int, default=MODEL_DEFAULTS['post_mlp_hidden'])
     parser.add_argument('--dna_window', type=int, default=MODEL_DEFAULTS['dna_window'])
+    _add_bool_pair(
+        parser, 'dna', MODEL_DEFAULTS['use_dna'],
+        'Use the DNA-sequence CNN encoder (default).',
+        'Disable DNA-sequence features while retaining Fourier genomic-position features (DNA ablation).'
+    )
     parser.add_argument('--fourier_dim', type=int, default=MODEL_DEFAULTS['fourier_dim'])
     parser.add_argument('--cell_emb_dim', type=int, default=MODEL_DEFAULTS['cell_emb_dim'])
     _add_bool_pair(
@@ -69,6 +96,14 @@ def build_parser():
     # Learnable local branch. Stage1 disables it automatically; stage2/3/end_to_end enable it unless --no-local.
     _add_bool_pair(parser, 'local', True, 'Enable learnable local CpG context.', 'Disable the local branch.')
     parser.add_argument('--local_windows', default=MODEL_DEFAULTS['local_windows'])
+    parser.add_argument(
+        '--local_aggregation', choices=['attention', 'mean'],
+        default=MODEL_DEFAULTS['local_aggregation'],
+        help=(
+            'Local aggregation rule: attention=target-conditioned attention (default); '
+            'mean=uniform masked mean over the same valid local tokens (attention ablation).'
+        ),
+    )
     parser.add_argument('--local_meth_dim', type=int, default=MODEL_DEFAULTS['local_meth_dim'])
     parser.add_argument('--local_mask_dim', type=int, default=MODEL_DEFAULTS['local_mask_dim'])
     parser.add_argument('--local_rel_pos_dim', type=int, default=MODEL_DEFAULTS['local_rel_pos_dim'])
@@ -136,7 +171,7 @@ def build_parser():
     parser.add_argument('--print_every', type=int, default=100)
     _add_bool_pair(parser, 'save-model', True, 'Save best validation-AUROC checkpoint.', 'Do not save checkpoints.')
     parser.add_argument('--run_final_test', action='store_true', default=False,
-                        help='Evaluate the final best-validation-AUROC checkpoint on the test chromosome once after training.')
+                        help='Evaluate the final best-validation-AUROC checkpoint on the test split once after training.')
 
     return parser
 
@@ -159,6 +194,27 @@ def _resolve_stage_defaults(args):
         args.run_final_test = True if not args.run_final_test else args.run_final_test
 
 
+
+def _resolve_split_config(args):
+    """Validate split-specific CLI options without changing legacy split semantics."""
+    if args.split_mode == 'chromosome_holdout':
+        if args.split_chrom is not None or args.split_fractions is not None:
+            raise ValueError(
+                '--split_chrom/--split_fractions are only valid with '
+                '--split_mode within_chromosome.'
+            )
+        return
+
+    if args.split_mode != 'within_chromosome':
+        raise ValueError(f'Unknown split_mode: {args.split_mode}')
+    if args.split_chrom in {None, ''}:
+        raise ValueError('--split_chrom is required with --split_mode within_chromosome.')
+    if args.split_fractions is None:
+        raise ValueError('--split_fractions TRAIN VAL TEST is required with --split_mode within_chromosome.')
+
+    args.split_chrom = canonical_chrom(args.split_chrom)
+    args.split_fractions = list(validate_split_fractions(args.split_fractions))
+
 def _seed_everything(seed):
     random.seed(seed)
     np.random.seed(seed)
@@ -171,6 +227,7 @@ def main():
     parser = build_parser()
     args = parser.parse_args()
     _resolve_stage_defaults(args)
+    _resolve_split_config(args)
     _seed_everything(args.seed)
     train_model(args)
 

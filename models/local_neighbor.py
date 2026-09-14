@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 
 class MultiScaleLocalCpGAttention(nn.Module):
-    """Target-conditioned multi-scale local CpG attention."""
+    """Multi-scale local CpG aggregation with attention or masked-mean ablation."""
 
     def __init__(
         self,
@@ -17,12 +17,16 @@ class MultiScaleLocalCpGAttention(nn.Module):
         hidden_dim=128,
         out_dim=32,
         dropout=0.1,
+        aggregation='attention',
     ):
         super().__init__()
         self.node_dim = int(node_dim)
         self.max_window = int(max_window)
         self.windows = tuple(int(w) for w in windows)
         self.out_dim = int(out_dim)
+        self.aggregation = str(aggregation).lower()
+        if self.aggregation not in {'attention', 'mean'}:
+            raise ValueError('aggregation must be attention or mean.')
         if not self.windows:
             raise ValueError('local_windows cannot be empty.')
         if min(self.windows) <= 0:
@@ -42,8 +46,13 @@ class MultiScaleLocalCpGAttention(nn.Module):
             nn.Linear(int(hidden_dim), int(out_dim)),
             nn.ReLU(),
         )
-        self.query_proj = nn.Linear(2 * self.node_dim, int(out_dim))
-        self.score_proj = nn.Linear(int(out_dim), 1, bias=False)
+        if self.aggregation == 'attention':
+            self.query_proj = nn.Linear(2 * self.node_dim, int(out_dim))
+            self.score_proj = nn.Linear(int(out_dim), 1, bias=False)
+        else:
+            # Mean ablation has no target-conditioned query/scoring parameters.
+            self.query_proj = None
+            self.score_proj = None
         self.out_proj = nn.Sequential(
             nn.Linear(int(out_dim) * len(self.windows), int(out_dim) * len(self.windows)),
             nn.ReLU(),
@@ -90,17 +99,28 @@ class MultiScaleLocalCpGAttention(nn.Module):
             dim=-1,
         )
         token_h = self.token_proj(token)
-        query = self.query_proj(torch.cat([node_emb[src], node_emb[dst]], dim=-1)).unsqueeze(1)
-        score = self.score_proj(torch.tanh(token_h + query)).squeeze(-1)
+
+        if self.aggregation == 'attention':
+            query = self.query_proj(torch.cat([node_emb[src], node_emb[dst]], dim=-1)).unsqueeze(1)
+            score = self.score_proj(torch.tanh(token_h + query)).squeeze(-1)
+        else:
+            score = None
 
         contexts = []
         self.last_attention = {}
         for window in self.windows:
             in_scale = (rel_offset.abs() <= int(window)).float() * local_valid
-            score_w = score.masked_fill(in_scale <= 0, -1e9)
-            attn_w = F.softmax(score_w, dim=1) * in_scale
-            attn_w = attn_w / attn_w.sum(dim=1, keepdim=True).clamp_min(1e-8)
-            contexts.append(torch.sum(attn_w.unsqueeze(-1) * token_h, dim=1))
-            self.last_attention[int(window)] = attn_w.detach()
+            if self.aggregation == 'attention':
+                score_w = score.masked_fill(in_scale <= 0, -1e9)
+                agg_w = F.softmax(score_w, dim=1) * in_scale
+                agg_w = agg_w / agg_w.sum(dim=1, keepdim=True).clamp_min(1e-8)
+            else:
+                # Attention ablation: same local tokens/windows, but uniform weight
+                # over valid tokens. Padding never contributes to the context.
+                agg_w = in_scale / in_scale.sum(dim=1, keepdim=True).clamp_min(1.0)
+
+            contexts.append(torch.sum(agg_w.unsqueeze(-1) * token_h, dim=1))
+            # Kept for diagnostics: for mean aggregation these are uniform valid-token weights.
+            self.last_attention[int(window)] = agg_w.detach()
 
         return self.out_proj(torch.cat(contexts, dim=-1))

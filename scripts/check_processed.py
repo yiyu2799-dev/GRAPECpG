@@ -34,6 +34,15 @@ def main():
     parser.add_argument('--metadata_file', default='metadata.json')
     parser.add_argument('--expected_cells', type=int, default=None)
     parser.add_argument('--expected_window', type=int, default=None)
+    parser.add_argument(
+        '--split_mode', choices=['chromosome_holdout', 'within_chromosome'],
+        default='chromosome_holdout',
+    )
+    parser.add_argument('--split_chrom', default=None)
+    parser.add_argument(
+        '--split_fractions', nargs=3, type=float, default=None,
+        metavar=('TRAIN', 'VAL', 'TEST'),
+    )
     parser.add_argument('--val_chrom', default='5')
     parser.add_argument('--test_chrom', default='10')
     parser.add_argument('--sample_sites', type=int, default=4096)
@@ -84,10 +93,78 @@ def main():
         print('WARNING: metadata.json is missing.')
 
     chroms = sorted(set(chrom.tolist()))
-    for split_name, split_chrom in [('validation', args.val_chrom), ('test', args.test_chrom)]:
-        split_chrom = canonical_chrom(split_chrom)
-        if split_chrom not in chroms:
-            raise ValueError(f'{split_name} chromosome {split_chrom} not found. Available={chroms}')
+    if args.split_mode == 'chromosome_holdout':
+        if args.split_chrom is not None or args.split_fractions is not None:
+            raise ValueError(
+                '--split_chrom/--split_fractions are only valid with '
+                '--split_mode within_chromosome.'
+            )
+        for split_name, split_chrom in [('validation', args.val_chrom), ('test', args.test_chrom)]:
+            split_chrom = canonical_chrom(split_chrom)
+            if split_chrom not in chroms:
+                raise ValueError(f'{split_name} chromosome {split_chrom} not found. Available={chroms}')
+        print(
+            'Split check: chromosome_holdout PASSED '
+            f'(val={canonical_chrom(args.val_chrom)}, test={canonical_chrom(args.test_chrom)})'
+        )
+    else:
+        if args.split_chrom in {None, ''}:
+            raise ValueError('--split_chrom is required with --split_mode within_chromosome.')
+        if args.split_fractions is None:
+            raise ValueError('--split_fractions TRAIN VAL TEST is required with --split_mode within_chromosome.')
+
+        split_chrom = canonical_chrom(args.split_chrom)
+        fractions = tuple(float(x) for x in args.split_fractions)
+        if len(fractions) != 3 or not all(np.isfinite(x) and x > 0 for x in fractions):
+            raise ValueError('split_fractions must be three finite, strictly positive values.')
+        if not np.isclose(sum(fractions), 1.0, rtol=0.0, atol=1e-8):
+            raise ValueError(f'split_fractions must sum to 1.0, got {fractions}.')
+        if chroms != [split_chrom]:
+            raise ValueError(
+                'within_chromosome mode requires exactly the requested chromosome; '
+                f'requested={split_chrom}, available={chroms}.'
+            )
+
+        idx = np.flatnonzero(chrom == split_chrom).astype(np.int64)
+        pos_selected = np.asarray(pos[idx], dtype=np.float64)
+        order = np.argsort(pos_selected, kind='mergesort')
+        sorted_idx = idx[order]
+        sorted_pos = pos_selected[order]
+        if len(sorted_pos) > 1 and np.any(np.diff(sorted_pos) <= 0):
+            raise ValueError(
+                'within_chromosome split requires unique genomic positions; '
+                'duplicate/non-increasing positions were detected.'
+            )
+
+        train_end = int(np.floor(len(sorted_idx) * fractions[0]))
+        val_end = int(np.floor(len(sorted_idx) * (fractions[0] + fractions[1])))
+        split_indices = {
+            'train': sorted_idx[:train_end],
+            'val': sorted_idx[train_end:val_end],
+            'test': sorted_idx[val_end:],
+        }
+        counts = {name: int(len(x)) for name, x in split_indices.items()}
+        if any(count <= 0 for count in counts.values()):
+            raise ValueError(
+                f'One or more within-chromosome splits are empty: {counts}.'
+            )
+
+        concatenated = np.concatenate([split_indices['train'], split_indices['val'], split_indices['test']])
+        if len(np.unique(concatenated)) != len(sorted_idx):
+            raise RuntimeError('Split overlap detected.')
+        if not np.array_equal(concatenated, sorted_idx):
+            raise RuntimeError('Split union/order invariant failed.')
+
+        train_pos = np.asarray(pos[split_indices['train']], dtype=np.float64)
+        val_pos = np.asarray(pos[split_indices['val']], dtype=np.float64)
+        test_pos = np.asarray(pos[split_indices['test']], dtype=np.float64)
+        if not (train_pos[-1] < val_pos[0] and val_pos[-1] < test_pos[0]):
+            raise RuntimeError('Position boundaries are not strictly ordered train < val < test.')
+        print(
+            'Split check: within_chromosome PASSED '
+            f'(chr={split_chrom}, fractions={fractions}, counts={counts}, '
+            f'boundaries={train_pos[-1]}|{val_pos[0]} ... {val_pos[-1]}|{test_pos[0]})'
+        )
 
     sample_n = min(max(args.sample_sites, 1), n_sites)
     sample_idx = np.linspace(0, n_sites - 1, sample_n, dtype=np.int64)

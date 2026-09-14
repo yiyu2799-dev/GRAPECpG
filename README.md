@@ -14,11 +14,6 @@ Alternatively, create a Python 3.10 environment and install the dependencies wit
 pip install -r requirements.txt
 ```
 
-Optional tests can be run with:
-```bash
-python -m pytest -q
-```
-
 These tests are used to check the main code interfaces and key implementation logic before training. They are optional and do not participate in model training.
 
 ## Data preparation
@@ -60,6 +55,7 @@ python train.py \
   --load_checkpoint runs/Hemato/stage2/model_best_val_auroc.pt \
   --log_dir stage3
 ```
+
 
 ## Evaluation
 A trained checkpoint can be evaluated with:
